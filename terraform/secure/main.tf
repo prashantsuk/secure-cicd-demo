@@ -130,13 +130,11 @@ resource "google_iam_workload_identity_pool_provider" "github" {
     "attribute.repository_owner" = "assertion.repository_owner"
   }
 
-  # Restrict federation to this exact repository AND the main branch.
-  # endsWith() supports both legacy and GitHub's newer immutable `sub` formats.
-  attribute_condition = <<-EOT
-    assertion.repository == "${var.github_repo}" &&
-    assertion.repository_owner == "${split("/", var.github_repo)[0]}" &&
-    assertion.sub.endsWith(":ref:refs/heads/main")
-  EOT
+attribute_condition = <<-EOT
+  assertion.repository == "${var.github_repo}" &&
+  assertion.repository_owner == "${split("/", var.github_repo)[0]}" &&
+  assertion.ref in ["refs/heads/main", "refs/heads/Feature/101"]
+EOT
 
   oidc {
     issuer_uri = "https://token.actions.githubusercontent.com"
