@@ -7,9 +7,16 @@ variable "project_id" {
   type = string
 }
 
+variable "github_owner" {
+  type        = string
+  description = "GitHub user or organisation allowed to deploy (change to yours)"
+  default     = "prashantsuk"
+}
+
 variable "github_repo" {
   type        = string
-  description = "owner/repo allowed to deploy, e.g. myuser/devsecops-demo"
+  description = "owner/repo allowed to deploy (change to yours)"
+  default     = "prashantsuk/secure-cicd-demo"
 }
 
 variable "admin_cidr_via_iap" {
@@ -125,12 +132,13 @@ resource "google_iam_workload_identity_pool_provider" "github" {
   workload_identity_pool_provider_id = "github-provider"
 
   attribute_mapping = {
-    "google.subject"       = "assertion.sub"
-    "attribute.repository" = "assertion.repository"
+    "google.subject"             = "assertion.sub"
+    "attribute.repository"       = "assertion.repository"
+    "attribute.repository_owner" = "assertion.repository_owner"
   }
 
-  # Only tokens from YOUR repo are accepted
-  attribute_condition = "assertion.repository == \"${var.github_repo}\""
+  # Only tokens from YOUR account AND YOUR repo are accepted (defence in depth)
+  attribute_condition = "assertion.repository_owner == \"${var.github_owner}\" && assertion.repository == \"${var.github_repo}\""
 
   oidc {
     issuer_uri = "https://token.actions.githubusercontent.com"
