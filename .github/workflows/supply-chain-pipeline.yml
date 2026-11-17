@@ -15,7 +15,9 @@ name: supply-chain-pipeline
 on:
   pull_request:
   push:
-    branches: [main]
+    branches: 
+      - main
+      - Feature*
   workflow_dispatch:
 
 permissions:
