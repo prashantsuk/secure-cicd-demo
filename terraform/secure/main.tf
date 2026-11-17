@@ -135,7 +135,7 @@ resource "google_iam_workload_identity_pool_provider" "github" {
   attribute_condition = <<-EOT
     assertion.repository == "${var.github_repo}" &&
     assertion.repository_owner == "${split("/", var.github_repo)[0]}" &&
-    assertion.sub.endsWith(":ref:refs/heads/main")
+    assertion.sub.endsWith(":ref:refs/heads/Feature/101")
   EOT
 
   oidc {
