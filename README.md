@@ -1,2 +1,4 @@
 # secure-cicd-demo
-AWS_KEY=AKIAIOSFODNN7EXAMPLE
+My name is prashant
+helloPrashant
+Thanks 
