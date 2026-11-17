@@ -7,16 +7,9 @@ variable "project_id" {
   type = string
 }
 
-variable "github_owner" {
-  type        = string
-  description = "GitHub user or organisation allowed to deploy (change to yours)"
-  default     = "prashantsuk"
-}
-
 variable "github_repo" {
   type        = string
-  description = "owner/repo allowed to deploy (change to yours)"
-  default     = "prashantsuk/secure-cicd-demo"
+  description = "owner/repo allowed to deploy, e.g. myuser/devsecops-demo"
 }
 
 variable "admin_cidr_via_iap" {
@@ -137,8 +130,13 @@ resource "google_iam_workload_identity_pool_provider" "github" {
     "attribute.repository_owner" = "assertion.repository_owner"
   }
 
-  # Only tokens from YOUR account AND YOUR repo are accepted (defence in depth)
-  attribute_condition = "assertion.repository_owner == \"${var.github_owner}\" && assertion.repository == \"${var.github_repo}\""
+  # Restrict federation to this exact repository AND the main branch.
+  # endsWith() supports both legacy and GitHub's newer immutable `sub` formats.
+  attribute_condition = <<-EOT
+    assertion.repository == "${var.github_repo}" &&
+    assertion.repository_owner == "${split("/", var.github_repo)[0]}" &&
+    assertion.sub.endsWith(":ref:refs/heads/main")
+  EOT
 
   oidc {
     issuer_uri = "https://token.actions.githubusercontent.com"
