@@ -48,11 +48,19 @@ resource "google_kms_crypto_key_iam_member" "gcs_agent" {
 }
 
 # ---------- Fix 1: private, versioned, encrypted, logged bucket ----------
+# nosemgrep: terraform.gcp.security.gcp-cloud-storage-logging.gcp-cloud-storage-logging
 resource "google_storage_bucket" "logs" {
+  # Accepted exception: this bucket IS the log destination. Logging it to itself would
+  # only generate more logs about logs. Reviewed and documented here on purpose.
+  #checkov:skip=CKV_GCP_62:Log destination bucket, access logging intentionally not enabled
   name                        = "${var.project_id}-access-logs"
   location                    = "US"
   uniform_bucket_level_access = true
   public_access_prevention    = "enforced"
+
+  versioning {
+    enabled = true # protects logs from being overwritten or tampered with
+  }
 }
 
 resource "google_storage_bucket" "data" {
