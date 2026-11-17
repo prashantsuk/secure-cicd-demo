@@ -1,1 +1,2 @@
 # secure-cicd-demo
+AWS_KEY=AKIAIOSFODNN7EXAMPLE
