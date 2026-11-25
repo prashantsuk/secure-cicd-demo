@@ -1,37 +1,42 @@
+
 # Place at: .github/workflows/supply-chain-pipeline.yml
 #
 # Software supply chain demo:
-#   secrets -> SAST -> dependencies -> IaC -> policy  (all in parallel, on every PR)
-#   then: build -> scan image -> push -> SBOM -> sign -> provenance -> verify  (main only)
-#   optional: keyless login to GCP via Workload Identity Federation
+#   secrets -> SAST -> dependencies -> IaC -> policy (parallel on every PR/push)
+#   then: build -> scan image -> push -> SBOM -> sign -> provenance -> verify
+#   GCP Workload Identity Federation authentication from main and Feature/101
 #
-# Runs on a free GitHub account. Images go to ghcr.io using the built-in GITHUB_TOKEN.
+# Images go to ghcr.io using the built-in GITHUB_TOKEN.
 #
-# HARDENING NOTE: actions below use version tags for readability. In real use, pin each
-# third-party action to a full commit SHA (Dependabot can keep the SHAs updated).
+# HARDENING NOTE:
+# Pin third-party actions to full commit SHAs in production.
+# Dependabot can help keep the SHAs updated.
 
 name: supply-chain-pipeline
 
 on:
   pull_request:
   push:
-    branches: 
+    branches:
       - main
-      - Feature*
+      - Feature/101
   workflow_dispatch:
 
 permissions:
-  contents: read # default for every job; jobs that need more ask for it explicitly
+  contents: read
 
 jobs:
+
   # ---------- 1. Secrets detection ----------
   secrets-scan:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 0 # scan full history, not just the latest commit
-      - uses: gitleaks/gitleaks-action@v2
+          fetch-depth: 0
+
+      - name: Gitleaks secrets scan
+        uses: gitleaks/gitleaks-action@v2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -42,11 +47,8 @@ jobs:
       image: semgrep/semgrep
     steps:
       - uses: actions/checkout@v4
-      # owasp_examples.py and terraform/insecure are intentionally vulnerable (training files).
-      # Remove those --exclude lines to watch this gate fail.
-      #
-      # TEMPORARY: the mutable-action-tag rule is skipped so the rest of the pipeline can run.
-      # TODO: pin every `uses:` to a full commit SHA, then delete the --exclude-rule line.
+
+      # Training files intentionally contain vulnerable examples.
       - name: Semgrep (OWASP Top 10 rules)
         run: |
           semgrep scan --config p/owasp-top-ten --error \
@@ -59,6 +61,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
       - name: Trivy filesystem scan
         uses: aquasecurity/trivy-action@v0.35.0
         with:
@@ -74,21 +77,20 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Checkov on the secure Terraform
+
+      - name: Checkov on secure Terraform
         uses: bridgecrewio/checkov-action@v12
         with:
           directory: terraform/secure
           framework: terraform
-          # First run may report findings in secure.tf. That is part of the exercise:
-          # fix them, or set soft_fail: true temporarily while you learn.
           soft_fail: false
 
-  # ---------- 5. Policy as code (OPA via Conftest) ----------
+  # ---------- 5. Policy as Code (OPA via Conftest) ----------
   policy-check:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      # Tests the .tf files directly, so no cloud credentials are needed.
+
       - name: Conftest on Terraform source
         run: |
           docker run --rm -v "$PWD":/project openpolicyagent/conftest \
@@ -96,23 +98,34 @@ jobs:
 
   # ---------- 6. Build, scan, push, SBOM, sign, provenance, verify ----------
   build-and-sign:
-    needs: [secrets-scan, sast, dependency-scan, iac-scan, policy-check]
+    needs:
+      - secrets-scan
+      - sast
+      - dependency-scan
+      - iac-scan
+      - policy-check
+
     runs-on: ubuntu-latest
+
     permissions:
       contents: read
-      packages: write # push to ghcr.io
-      id-token: write # keyless signing (OIDC)
-      attestations: write # GitHub build provenance
+      packages: write
+      id-token: write
+      attestations: write
+
     env:
       IS_RELEASE: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+
     steps:
       - uses: actions/checkout@v4
 
       - name: Set lowercase image name
         run: echo "IMAGE=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_ENV"
 
-      - uses: docker/setup-buildx-action@v3
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
 
+      # Build locally for scanning on both branches.
       - name: Build image (local only, for scanning)
         uses: docker/build-push-action@v6
         with:
@@ -128,7 +141,8 @@ jobs:
           ignore-unfixed: true
           exit-code: "1"
 
-      # ----- everything below runs only on pushes to main -----
+      # ----- Release operations: main branch only -----
+
       - name: Log in to GitHub Container Registry
         if: env.IS_RELEASE == 'true'
         uses: docker/login-action@v3
@@ -144,7 +158,7 @@ jobs:
         with:
           context: .
           push: true
-          provenance: false # we attach our own signed provenance below
+          provenance: false
           tags: ${{ env.IMAGE }}:${{ github.sha }}
 
       - name: Install cosign
@@ -153,7 +167,8 @@ jobs:
 
       - name: Sign image (keyless)
         if: env.IS_RELEASE == 'true'
-        run: cosign sign --yes "${IMAGE}@${{ steps.push.outputs.digest }}"
+        run: |
+          cosign sign --yes "${IMAGE}@${{ steps.push.outputs.digest }}"
 
       - name: Generate SBOM (SPDX)
         if: env.IS_RELEASE == 'true'
@@ -163,13 +178,13 @@ jobs:
           format: spdx-json
           output-file: sbom.spdx.json
 
-      - name: Attach SBOM to the image as a signed attestation
+      - name: Attach SBOM to image as signed attestation
         if: env.IS_RELEASE == 'true'
         run: |
           cosign attest --yes --type spdxjson --predicate sbom.spdx.json \
             "${IMAGE}@${{ steps.push.outputs.digest }}"
 
-      - name: Build provenance (who built what, from which commit)
+      - name: Build provenance
         if: env.IS_RELEASE == 'true'
         uses: actions/attest-build-provenance@v2
         with:
@@ -183,14 +198,16 @@ jobs:
           IDENTITY="^https://github.com/${GITHUB_REPOSITORY}/"
           ISSUER="https://token.actions.githubusercontent.com"
           REF="${IMAGE}@${{ steps.push.outputs.digest }}"
+
           cosign verify "$REF" \
             --certificate-identity-regexp "$IDENTITY" \
             --certificate-oidc-issuer "$ISSUER"
+
           cosign verify-attestation "$REF" --type spdxjson \
             --certificate-identity-regexp "$IDENTITY" \
             --certificate-oidc-issuer "$ISSUER" > /dev/null
 
-      - name: Re-scan the SBOM for known vulnerabilities (informational)
+      - name: Re-scan SBOM for known vulnerabilities
         if: env.IS_RELEASE == 'true'
         uses: anchore/scan-action@v6
         with:
@@ -203,22 +220,42 @@ jobs:
           {
             echo "### Release artifact"
             echo "- Image: \`${IMAGE}@${{ steps.push.outputs.digest }}\`"
-            echo "- Signed with cosign (keyless), SBOM attached, provenance attested"
+            echo "- Signed with cosign (keyless)"
+            echo "- SBOM attached"
+            echo "- Provenance attested"
           } >> "$GITHUB_STEP_SUMMARY"
 
-  # ---------- 7. Optional: keyless login to GCP ----------
+  # ---------- 7. GCP Workload Identity Federation ----------
+  # Authentication is permitted from main and Feature/101.
+  # Terraform provider must allow both branches in its attribute_condition.
+
   gcp-keyless-check:
     needs: build-and-sign
-    # Runs only if you set repository variables GCP_WIF_PROVIDER and GCP_SERVICE_ACCOUNT
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.GCP_WIF_PROVIDER != ''
+
+    if: >-
+      github.event_name == 'push' &&
+      (github.ref == 'refs/heads/main' ||
+       github.ref == 'refs/heads/Feature/101') &&
+      vars.GCP_WIF_PROVIDER != '' &&
+      vars.GCP_SERVICE_ACCOUNT != ''
+
     runs-on: ubuntu-latest
+
     permissions:
       contents: read
       id-token: write
+
     steps:
-      - uses: google-github-actions/auth@v2
+      - name: Authenticate to Google Cloud using Workload Identity Federation
+        uses: google-github-actions/auth@v2
         with:
           workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
           service_account: ${{ vars.GCP_SERVICE_ACCOUNT }}
-      - name: Prove we are authenticated without any stored key
-        run: gcloud auth list
+
+      - name: Set up Google Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Verify GCP authentication
+        run: |
+          echo "Successfully authenticated to Google Cloud using WIF"
+          gcloud auth list
